@@ -16,6 +16,10 @@ venv/
 # Streamlit local config/cache
 .streamlit/
 
+# Runtime logs
+app_debug.log
+*.log
+
 # OS
 .DS_Store
 Thumbs.db

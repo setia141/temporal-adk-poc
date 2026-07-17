@@ -6,8 +6,14 @@ from dotenv import load_dotenv
 from temporalio.client import Client
 from temporalio.worker import Worker
 
-from activities import research_activity, write_activity, review_activity
-from workflow import ContentPipelineWorkflow
+from activities import (
+    architecture_evaluator_activity,
+    complexity_assessment_activity,
+    intake_activity,
+    risk_scoring_activity,
+    triage_classification_activity,
+)
+from workflow import IntakeWorkflow
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -23,8 +29,14 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue=task_queue,
-        workflows=[ContentPipelineWorkflow],
-        activities=[research_activity, write_activity, review_activity],
+        workflows=[IntakeWorkflow],
+        activities=[
+            intake_activity,
+            risk_scoring_activity,
+            complexity_assessment_activity,
+            triage_classification_activity,
+            architecture_evaluator_activity,
+        ],
     )
 
     logging.info("Starting worker on task queue '%s' (%s)", task_queue, address)
