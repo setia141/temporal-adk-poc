@@ -1,0 +1,5 @@
+temporalio>=1.30.0
+google-adk>=2.4.0
+litellm==1.74.15  # pinned: newer versions require a Rust build (MSVC link.exe) on Windows
+python-dotenv>=1.2.2
+streamlit>=1.38.0

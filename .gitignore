@@ -1,0 +1,21 @@
+# Secrets / local config
+.env
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+vevnv/
+.venv/
+venv/
+
+# Streamlit local config/cache
+.streamlit/
+
+# OS
+.DS_Store
+Thumbs.db
