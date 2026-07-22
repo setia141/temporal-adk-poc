@@ -3,3 +3,5 @@ google-adk>=2.4.0
 litellm==1.74.15  # pinned: newer versions require a Rust build (MSVC link.exe) on Windows
 python-dotenv>=1.2.2
 streamlit>=1.38.0
+pypdf>=5.0.0
+azure-storage-blob>=12.19.0  # only needed if ATTACHMENT_STORE=azure_blob

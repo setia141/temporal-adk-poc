@@ -2,8 +2,15 @@ import asyncio
 import concurrent.futures
 import logging
 import os
+import sys
 import threading
 import uuid
+from pathlib import Path
+
+# clients/ is a subfolder, but shared/storage/workflow/agents/runner are
+# top-level packages at the repo root — make sure that root is importable
+# regardless of the cwd this script is launched from.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import streamlit as st
 import temporalio.client
@@ -12,7 +19,8 @@ from dotenv import load_dotenv
 from temporalio.client import Client
 
 from shared import IntakeForm
-from workflow import IntakeWorkflow
+from storage import get_attachment_store
+from workflow import AMENDABLE_FIELDS, IntakeWorkflow
 
 load_dotenv()
 
@@ -154,6 +162,11 @@ async def submit_answer(client: Client, workflow_id: str, answer: str) -> None:
     await handle.execute_update(IntakeWorkflow.submit_answer, answer)
 
 
+async def submit_amendment(client: Client, workflow_id: str, field: str, value: str) -> None:
+    handle = client.get_workflow_handle(workflow_id)
+    await handle.execute_update(IntakeWorkflow.submit_amendment, args=[field, value])
+
+
 if not st.session_state.running:
     try:
         open_runs = run_async(list_open_workflows(get_temporal_client()))
@@ -214,9 +227,18 @@ else:
             "evaluator ask a clarifying question — clear this field entirely to see "
             "it skip the review instead, or fill in real details to see a real review.",
         )
+        attachment_upload = st.file_uploader(
+            "Supporting attachment (optional)",
+            type=["pdf", "png", "jpg", "jpeg", "gif", "webp", "txt", "md", "csv", "json"],
+        )
         submitted = st.form_submit_button("Submit intake request", type="primary")
 
     if submitted:
+        attachment_ref, attachment_filename = "", ""
+        if attachment_upload is not None:
+            attachment_ref = get_attachment_store().put(attachment_upload.getvalue(), attachment_upload.name)
+            attachment_filename = attachment_upload.name
+
         form = IntakeForm(
             api_name=api_name,
             description=description,
@@ -224,6 +246,8 @@ else:
             expected_consumers=expected_consumers,
             data_sensitivity=data_sensitivity,
             architecture_notes=architecture_notes,
+            attachment_ref=attachment_ref,
+            attachment_filename=attachment_filename,
         )
         try:
             workflow_id = run_async(
@@ -295,6 +319,27 @@ def render_pipeline_status():
             if entry.role != "answer":
                 st.markdown(label)
             st.markdown(entry.text)
+
+    if not status.is_complete:
+        with st.expander("Correct earlier info"):
+            st.caption(
+                "Fixes here take effect at the next stage checkpoint, "
+                "re-running that stage and everything after it — even if "
+                "a later stage already produced output, or is currently "
+                "paused asking its own question."
+            )
+            with st.form("amend_form", border=False):
+                field = st.selectbox("Field", sorted(AMENDABLE_FIELDS))
+                value = st.text_input("Corrected value")
+                if st.form_submit_button("Submit correction") and value.strip():
+                    try:
+                        run_async(
+                            submit_amendment(get_temporal_client(), workflow_id, field, value)
+                        )
+                    except temporalio.client.WorkflowUpdateFailedError as exc:
+                        st.error(f"Correction rejected: {exc}")
+                    else:
+                        st.rerun()
 
     if status.waiting_for_input:
         answer = st.chat_input(f"Answer {status.stage}'s question above...")

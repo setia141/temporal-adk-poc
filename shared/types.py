@@ -9,12 +9,20 @@ class IntakeForm:
     expected_consumers: str
     data_sensitivity: str  # "None" | "Internal only" | "PII" | "Confidential/Regulated"
     architecture_notes: str = ""
+    # Optional supporting file (PDF, image, text/markdown, ...). attachment_ref
+    # is an opaque key resolved via attachment_store.get_attachment_store() —
+    # never a client-local path, since the workflow may run on a different
+    # host than the client.
+    attachment_ref: str = ""
+    attachment_filename: str = ""
 
 
 @dataclass
 class AgentRequest:
     subject: str
     context: str = ""
+    attachment_ref: str = ""
+    attachment_filename: str = ""
 
 
 @dataclass

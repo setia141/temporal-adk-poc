@@ -10,23 +10,23 @@ answered, instead of always running start-to-finish unattended.
 ## Architecture
 
 ```
-starter.py / app.py --> Temporal Server --> worker.py
+clients/starter.py / clients/app.py --> Temporal Server --> worker.py
                                                 |
-                                     IntakeWorkflow (workflow.py)
+                                IntakeWorkflow (workflow/intake_workflow.py)
                                                 |
-                    intake_activity ("intake_preparation" agent)
+                     agents.intake.activity ("intake_preparation" agent)
                                                 |
                           +-----------+-----------+
                           |                       |
-              risk_scoring_activity   complexity_assessment_activity
+        agents.risk_scoring.activity   agents.complexity_assessment.activity
                 (runs in parallel via asyncio.gather)
                           |                       |
                           +-----------+-----------+
                                       |
-                     triage_classification_activity
+                agents.triage_classification.activity
                             ("triage_classification" agent)
                                       |
-                     architecture_evaluator_activity
+                agents.architecture_evaluator.activity
                           ("architecture_evaluator" agent)
                                       |
                               IntakeResult
@@ -39,29 +39,67 @@ concurrently (not just concurrently-scheduled) — see "How It Works" below.
 
 ## Project Structure
 
+Each of the five agents is its own component: a folder under `agents/`
+holding just its `prompt.py` (instruction text, nothing else) and
+`activity.py` (the Temporal activity that builds the request and calls the
+shared agent runner). Prompt wording and orchestration code never share a
+file.
+
 ```
-shared.py        Dataclasses shared between workflow and activities
-                  (IntakeForm, AgentRequest, AgentResponse, IntakeResult,
-                  TranscriptEntry, IntakeStatus)
-activities.py     Temporal activities: intake_activity, risk_scoring_activity,
-                  complexity_assessment_activity, triage_classification_activity,
-                  architecture_evaluator_activity
-agent_runner.py   Builds and runs a single ADK LlmAgent turn via LiteLlm;
-                  detects the CLARIFY_NEEDED: convention
-workflow.py       IntakeWorkflow — orchestrates the four activities (two of
-                  them in parallel), pausing for clarification via an
-                  update + query
-worker.py         Long-lived process that polls Temporal and executes
-                  workflow/activity tasks
-starter.py        CLI entry point: prompts for the intake form fields,
-                  starts one workflow run, prompts for answers when an
-                  agent asks a clarifying question, prints the result
-app.py            Streamlit UI: a form to submit an intake request, the
-                  same start/poll/answer flow as starter.py rendered as a
-                  chat, plus a picker to resume a run left mid-conversation
-requirements.txt  Python dependencies
-.env.example      Template for local environment/config
+shared/
+  types.py             Dataclasses shared between workflow and activities
+                        (IntakeForm, AgentRequest, AgentResponse,
+                        IntakeResult, TranscriptEntry, IntakeStatus)
+runner/
+  agent_runner.py       run_agent() — builds and runs a single ADK LlmAgent
+                        turn via LiteLlm; detects the CLARIFY_NEEDED:
+                        convention
+  clarify_prompt.py     CLARIFY_CONVENTION prompt text + CLARIFY_PREFIX
+                        marker, shared by every clarification-capable agent
+storage/
+  attachment_store.py   Pluggable attachment storage: "inline" (bytes ride
+                        through Temporal itself) or "azure_blob" backend,
+                        selected via ATTACHMENT_STORE env var
+agents/
+  intake/               prompt.py, activity.py (intake_activity), plus
+                        attachment.py (parses a supporting PDF/image/text
+                        file — the only agent that takes an attachment)
+  risk_scoring/          prompt.py, activity.py (risk_scoring_activity)
+  complexity_assessment/ prompt.py, activity.py (complexity_assessment_activity)
+  triage_classification/ prompt.py, activity.py (triage_classification_activity)
+  architecture_evaluator/ prompt.py (also holds ARCHITECTURE_STANDARDS),
+                        activity.py (architecture_evaluator_activity)
+workflow/
+  intake_workflow.py    IntakeWorkflow — orchestrates the five activities
+                        (two of them in parallel), pausing for clarification
+                        via an update + query, and supporting mid-run
+                        amendment of earlier-stage info
+worker.py                Long-lived process that polls Temporal and executes
+                         workflow/activity tasks. Stays at the repo root —
+                         the one long-lived process, not a per-invocation
+                         client.
+clients/
+  starter.py              CLI entry point: prompts for the intake form
+                         fields, starts one workflow run, prompts for
+                         answers when an agent asks a clarifying question,
+                         prints the result
+  app.py                  Streamlit UI: a form to submit an intake request,
+                         the same start/poll/answer flow as starter.py
+                         rendered as a chat, plus a picker to resume a run
+                         left mid-conversation
+test_data/               Sample PDF/image/markdown attachment fixtures for
+                         manually testing the attachment feature
+requirements.txt         Python dependencies
+.env.example             Template for local environment/config
 ```
+
+Every package above (`shared`, `runner`, `storage`, `agents`, `workflow`) is
+imported as a top-level package — e.g. `from agents.intake import
+intake_activity`, `from shared import IntakeForm`. Because `clients/starter.py`
+and `clients/app.py` live one level below those packages, each inserts the
+repo root at the front of `sys.path` before its other imports (see the top of
+either file), so `python clients/starter.py` / `streamlit run clients/app.py`
+resolve those imports correctly when run from the repo root.
 
 ## Setup
 
@@ -128,7 +166,7 @@ server, the worker, and (briefly) the starter. Use three separate terminals.
    Streamlit UI below — both drive the same workflow the same way.
 
    ```
-   python starter.py
+   python clients/starter.py
    ```
 
    Re-run step 3 for a new request any time; you don't need to restart the
@@ -141,7 +179,7 @@ terminal — it starts the same workflow and polls it the same way, so the
 Temporal server and worker still need to be running:
 
 ```
-streamlit run app.py
+streamlit run clients/app.py
 ```
 
 This opens a browser page with an intake form (API name, description,
@@ -225,7 +263,7 @@ session values like `workflow_id`) as plain parameters instead of calling
 
 3. When Temporal has a task for the worker, the worker executes the
    matching code:
-   - **Workflow tasks** run `IntakeWorkflow.run` (`workflow.py`). This
+   - **Workflow tasks** run `IntakeWorkflow.run` (`workflow/intake_workflow.py`). This
      method is plain `async` Python but must stay *deterministic* — no
      network calls, no randomness, no real timers — because Temporal may
      replay it from history to rebuild state (e.g. after a worker
@@ -235,10 +273,11 @@ session values like `workflow_id`) as plain parameters instead of calling
      activities, not the gather itself) rather than doing any real work
      itself.
    - **Activity tasks** run the actual side-effecting code — the five
-     functions in `activities.py`. Activities are where non-determinism is
-     allowed, so this is where the real OpenAI calls happen.
+     `*_activity` functions, one per `agents/<name>/activity.py`. Activities
+     are where non-determinism is allowed, so this is where the real OpenAI
+     calls happen.
 
-4. Each activity calls `run_agent(...)` (`agent_runner.py`), which builds a
+4. Each activity calls `run_agent(...)` (`runner/agent_runner.py`), which builds a
    fresh Google ADK `LlmAgent` wired to `LiteLlm(model=ADK_MODEL)` and runs
    one turn through an ADK `Runner`. LiteLLM translates that into an
    OpenAI-compatible chat completion request sent to `OPENAI_API_BASE`
@@ -297,13 +336,9 @@ session values like `workflow_id`) as plain parameters instead of calling
 
    A pausable stage can also loop more than once — if the user's answer
    doesn't actually resolve what the agent needed, it can legitimately ask
-   again. `_run_stage` caps this at `MAX_CLARIFICATION_ROUNDS = 2`: once
-   hit, one final activity call is made with an explicit "you must answer
-   now" instruction appended to the context, and *that* call's output is
-   accepted unconditionally. Without this cap, testing surfaced a real
-   failure mode — an agent re-asking a near-identical question indefinitely
-   despite a relevant answer each time — which would otherwise hang a stage
-   forever.
+   again. There is no cap on this: a stage will keep looping through
+   clarification rounds for as long as the agent keeps setting
+   `needs_clarification=True`, with no forced-final-answer fallback.
 
    For a pausable stage, when an activity's response has
    `needs_clarification=True`, `_run_stage` doesn't move on — it records
@@ -342,21 +377,54 @@ process can resume exactly where the old one left off instead of restarting
 the whole pipeline (and therefore re-paying for OpenAI calls that already
 succeeded).
 
+### Supporting attachments
+
+The intake form accepts one optional supporting file (PDF, image, or
+text/markdown). The client (`starter.py`/`app.py`) reads it once and calls
+`get_attachment_store().put(bytes, filename)`, getting back an opaque `ref`
+string that goes into `IntakeForm.attachment_ref` — never a filesystem path
+(the workflow may run on a different host than the client) and never raw
+bytes directly on the form (keeps workflow-history payloads small).
+`agents/intake/activity.py` resolves the ref back to bytes and
+`agents/intake/attachment.py` dispatches by file extension: PDFs are
+text-extracted with `pypdf`, text-like files are decoded as UTF-8, and
+images are kept as raw bytes and handed to the model as a real image part
+(`agents/intake/activity.py` → `run_agent(..., image_bytes=...)`) so a
+vision-capable model actually sees it. Storage backend is chosen via the
+`ATTACHMENT_STORE` env var — `inline` (default, no infra, bounded by
+Temporal's own payload size limits) or `azure_blob` (persists externally,
+no size ceiling; requires `AZURE_STORAGE_CONNECTION_STRING`).
+
+### Amending earlier-stage info mid-run
+
+`submit_amendment(field, value)` (a `@workflow.update`) lets you correct a
+field you already submitted even after later stages have run, or while one
+is paused asking its own question. Each field maps to the earliest stage
+that depends on it (`AMENDABLE_FIELDS` in `workflow/intake_workflow.py`) —
+correcting an intake-form field re-runs everything from intake onward;
+correcting `architecture_notes` only re-runs the architecture evaluator,
+since nothing else consumes it. If an amendment arrives while a stage is
+paused on its own clarification question, that question is abandoned (not
+answered) and the pipeline restarts from the amended stage immediately;
+otherwise it's picked up at the next stage boundary. `starter.py` exposes
+this as an `amend <field>=<value>` command typeable at any time; `app.py`
+exposes it as a "Correct earlier info" form.
+
 ## Notes
 
-- `agent_runner.py` builds a fresh ADK `LlmAgent` + `Runner` per activity
-  call, keeping each activity stateless and safe to retry.
+- `runner/agent_runner.py` builds a fresh ADK `LlmAgent` + `Runner` per
+  activity call, keeping each activity stateless and safe to retry.
 - `LiteLlm(model="openai/gpt-4o-mini")` is ADK's documented way to route a
   model through LiteLLM; change `ADK_MODEL` in `.env` to use a different
   OpenAI model (or any other LiteLLM-supported provider/gateway).
 - Activities (not the workflow) do all ADK/LiteLLM/network work, since
   Temporal workflow code must be deterministic and the ADK SDK is not
   sandbox-safe.
-- `ARCHITECTURE_STANDARDS` in `activities.py` is a short invented-but
-  -plausible baseline (versioned endpoints, OAuth2/mTLS, encryption +
-  audit logging for sensitive data, statelessness, shared gateway reuse)
-  for the architecture evaluator to compare against — swap it for your
-  organization's real standard whenever this stops being a POC.
+- `ARCHITECTURE_STANDARDS` in `agents/architecture_evaluator/prompt.py` is a
+  short invented-but-plausible baseline (versioned endpoints, OAuth2/mTLS,
+  encryption + audit logging for sensitive data, statelessness, shared
+  gateway reuse) for the architecture evaluator to compare against — swap
+  it for your organization's real standard whenever this stops being a POC.
 - Whether an interruptible agent asks a clarifying question is a genuine
   LLM decision guided by its instruction, not a hardcoded trigger — it's
   told what a complete answer requires and to ask rather than guess when
