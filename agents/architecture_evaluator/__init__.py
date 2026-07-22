@@ -1,3 +1,3 @@
-from .activity import architecture_evaluator_activity
+from .step import run_architecture_evaluator
 
-__all__ = ["architecture_evaluator_activity"]
+__all__ = ["run_architecture_evaluator"]

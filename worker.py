@@ -4,13 +4,10 @@ import os
 
 from dotenv import load_dotenv
 from temporalio.client import Client
+from temporalio.contrib.google_adk_agents import GoogleAdkPlugin
 from temporalio.worker import Worker
 
-from agents.architecture_evaluator import architecture_evaluator_activity
-from agents.complexity_assessment import complexity_assessment_activity
-from agents.intake import intake_activity
-from agents.risk_scoring import risk_scoring_activity
-from agents.triage_classification import triage_classification_activity
+from agents.intake import load_attachment_activity
 from workflow import IntakeWorkflow
 
 load_dotenv()
@@ -22,19 +19,16 @@ async def main() -> None:
     namespace = os.environ.get("TEMPORAL_NAMESPACE", "default")
     task_queue = os.environ.get("TEMPORAL_TASK_QUEUE", "adk-agents-task-queue")
 
-    client = await Client.connect(address, namespace=namespace)
+    client = await Client.connect(address, namespace=namespace, plugins=[GoogleAdkPlugin()])
 
     worker = Worker(
         client,
         task_queue=task_queue,
         workflows=[IntakeWorkflow],
-        activities=[
-            intake_activity,
-            risk_scoring_activity,
-            complexity_assessment_activity,
-            triage_classification_activity,
-            architecture_evaluator_activity,
-        ],
+        # GoogleAdkPlugin auto-registers its own invoke_model/invoke_model_streaming
+        # activities (see _plugin.py) — load_attachment_activity is the only
+        # activity this project still defines by hand.
+        activities=[load_attachment_activity],
     )
 
     logging.info("Starting worker on task queue '%s' (%s)", task_queue, address)

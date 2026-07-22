@@ -17,6 +17,7 @@ import temporalio.client
 import temporalio.service
 from dotenv import load_dotenv
 from temporalio.client import Client
+from temporalio.contrib.google_adk_agents import GoogleAdkPlugin
 
 from shared import IntakeForm
 from storage import get_attachment_store
@@ -103,7 +104,11 @@ def get_temporal_client() -> Client:
     """
     config = _temporal_config()
     log.info("Connecting to Temporal at %s", config["address"])
-    return run_async(Client.connect(config["address"], namespace=config["namespace"]))
+    return run_async(
+        Client.connect(
+            config["address"], namespace=config["namespace"], plugins=[GoogleAdkPlugin()]
+        )
+    )
 
 
 async def start_workflow(client: Client, form: IntakeForm, task_queue: str) -> str:

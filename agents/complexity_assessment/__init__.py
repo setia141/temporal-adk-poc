@@ -1,3 +1,3 @@
-from .activity import complexity_assessment_activity
+from .step import run_complexity_assessment
 
-__all__ = ["complexity_assessment_activity"]
+__all__ = ["run_complexity_assessment"]

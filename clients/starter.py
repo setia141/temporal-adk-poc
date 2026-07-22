@@ -13,6 +13,7 @@ import temporalio.client
 import temporalio.service
 from dotenv import load_dotenv
 from temporalio.client import Client
+from temporalio.contrib.google_adk_agents import GoogleAdkPlugin
 
 from shared import IntakeForm
 from storage import get_attachment_store
@@ -103,7 +104,7 @@ async def main() -> None:
     namespace = os.environ.get("TEMPORAL_NAMESPACE", "default")
     task_queue = os.environ.get("TEMPORAL_TASK_QUEUE", "adk-agents-task-queue")
 
-    client = await Client.connect(address, namespace=namespace)
+    client = await Client.connect(address, namespace=namespace, plugins=[GoogleAdkPlugin()])
 
     workflow_id = f"intake-{uuid.uuid4()}"
     handle = await client.start_workflow(

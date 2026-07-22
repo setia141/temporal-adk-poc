@@ -5,11 +5,12 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 with workflow.unsafe.imports_passed_through():
-    from agents.architecture_evaluator import architecture_evaluator_activity
-    from agents.complexity_assessment import complexity_assessment_activity
-    from agents.intake import intake_activity
-    from agents.risk_scoring import risk_scoring_activity
-    from agents.triage_classification import triage_classification_activity
+    from agents.architecture_evaluator import run_architecture_evaluator
+    from agents.complexity_assessment import run_complexity_assessment
+    from agents.intake import AttachmentFetchRequest, load_attachment_activity, run_intake
+    from agents.intake.attachment import Attachment
+    from agents.risk_scoring import run_risk_scoring
+    from agents.triage_classification import run_triage_classification
     from shared import AgentRequest, IntakeForm, IntakeResult, IntakeStatus, TranscriptEntry
 
 DEFAULT_RETRY_POLICY = RetryPolicy(
@@ -41,7 +42,17 @@ class IntakeWorkflow:
     parallel, then a classification/routing decision), and architecture
     evaluation. Any interruptible stage can pause to ask the user a
     clarifying question via the submit_answer update, which the
-    get_status query surfaces to callers."""
+    get_status query surfaces to callers.
+
+    Model calls are proxied through Temporal Activities by the official
+    `temporalio.contrib.google_adk_agents` plugin (TemporalModel +
+    GoogleAdkPlugin, configured on the Worker's Client in worker.py) rather
+    than by a hand-written `@activity.defn` per agent — so run_intake /
+    run_risk_scoring / etc. are awaited directly here, not dispatched via
+    workflow.execute_activity. The one thing that's still a genuine
+    Activity is load_attachment_activity, since fetching/parsing an
+    attachment is real I/O unrelated to any LLM call.
+    """
 
     def __init__(self) -> None:
         self._summary: str = ""
@@ -55,19 +66,14 @@ class IntakeWorkflow:
         self._form: IntakeForm | None = None
         self._pending_amendment: str | None = None  # a STAGE_ORDER name, or None
 
-    async def _run_stage(self, agent_name: str, activity_fn, request: AgentRequest):
+    async def _run_stage(self, agent_name: str, step_fn, request: AgentRequest):
         """Returns an AgentResponse, or None if an amendment arrived while
         this stage was paused on its own clarification question — in that
         case the current question is abandoned rather than answered, since
         an earlier-stage amendment is about to make it moot."""
         self._current_stage = agent_name
         while True:
-            response = await workflow.execute_activity(
-                activity_fn,
-                request,
-                start_to_close_timeout=timedelta(minutes=2),
-                retry_policy=DEFAULT_RETRY_POLICY,
-            )
+            response = await step_fn(request)
             if not response.needs_clarification:
                 self._transcript.append(TranscriptEntry(agent_name, "output", response.output))
                 return response
@@ -110,14 +116,20 @@ class IntakeWorkflow:
                     f"Expected consumers: {form.expected_consumers}\n"
                     f"Data sensitivity: {form.data_sensitivity}"
                 )
+                attachment = Attachment()
+                if form.attachment_ref:
+                    attachment = await workflow.execute_activity(
+                        load_attachment_activity,
+                        AttachmentFetchRequest(
+                            ref=form.attachment_ref, filename=form.attachment_filename
+                        ),
+                        start_to_close_timeout=timedelta(minutes=2),
+                        retry_policy=DEFAULT_RETRY_POLICY,
+                    )
                 intake = await self._run_stage(
                     "intake",
-                    intake_activity,
-                    AgentRequest(
-                        subject=form_text,
-                        attachment_ref=form.attachment_ref,
-                        attachment_filename=form.attachment_filename,
-                    ),
+                    lambda req, _attachment=attachment: run_intake(req, _attachment),
+                    AgentRequest(subject=form_text),
                 )
                 if intake is None:
                     restart_from = self._pending_amendment
@@ -126,18 +138,8 @@ class IntakeWorkflow:
             if STAGE_ORDER.index(restart_from) <= STAGE_ORDER.index("triage"):
                 self._current_stage = "triage"
                 risk_response, complexity_response = await asyncio.gather(
-                    workflow.execute_activity(
-                        risk_scoring_activity,
-                        AgentRequest(subject=intake.output),
-                        start_to_close_timeout=timedelta(minutes=2),
-                        retry_policy=DEFAULT_RETRY_POLICY,
-                    ),
-                    workflow.execute_activity(
-                        complexity_assessment_activity,
-                        AgentRequest(subject=intake.output),
-                        start_to_close_timeout=timedelta(minutes=2),
-                        retry_policy=DEFAULT_RETRY_POLICY,
-                    ),
+                    run_risk_scoring(AgentRequest(subject=intake.output)),
+                    run_complexity_assessment(AgentRequest(subject=intake.output)),
                 )
                 self._transcript.append(
                     TranscriptEntry("risk_scoring", "output", risk_response.output)
@@ -148,7 +150,7 @@ class IntakeWorkflow:
 
                 triage = await self._run_stage(
                     "triage_classification",
-                    triage_classification_activity,
+                    run_triage_classification,
                     AgentRequest(
                         subject=intake.output,
                         context=(
@@ -163,7 +165,7 @@ class IntakeWorkflow:
 
             architecture = await self._run_stage(
                 "architecture_evaluator",
-                architecture_evaluator_activity,
+                run_architecture_evaluator,
                 AgentRequest(subject=intake.output, context=form.architecture_notes),
             )
             if architecture is None:

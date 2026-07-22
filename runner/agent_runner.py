@@ -1,19 +1,40 @@
-"""Helper for running a single-turn Google ADK agent backed by LiteLLM.
+"""Helper for running a single-turn Google ADK agent whose model calls are
+proxied through Temporal Activities via the official
+`temporalio.contrib.google_adk_agents` plugin (`TemporalModel` +
+`GoogleAdkPlugin`, configured on the Worker's Client in worker.py).
 
-Kept separate from the agent activities so the ADK/LiteLLM wiring is
-defined once and reused by every agent activity.
+Unlike the hand-rolled version this replaces, `run_agent` is meant to be
+awaited directly from workflow code, not wrapped in its own `@activity.defn`:
+`TemporalModel.generate_content_async` is what turns the actual LLM call
+into a Temporal Activity (`invoke_model`) under the hood, so everything
+around it (Agent construction, Runner event loop, response parsing) is safe
+to run in workflow code as long as GoogleAdkPlugin is configured on the
+Worker (it adds `google.adk`/`google.genai`/`mcp` to the sandbox passthrough
+and patches ADK's time/uuid providers to Temporal's deterministic ones).
 """
 
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
+from google.adk.runners import InMemoryRunner
 from google.genai import types
+from temporalio.common import RetryPolicy
+from temporalio.contrib.google_adk_agents import TemporalModel
+from temporalio.workflow import ActivityConfig
 
 from .clarify_prompt import CLARIFY_CONVENTION, CLARIFY_PREFIX
+
+DEFAULT_ACTIVITY_CONFIG = ActivityConfig(
+    start_to_close_timeout=timedelta(minutes=2),
+    retry_policy=RetryPolicy(
+        initial_interval=timedelta(seconds=2),
+        backoff_coefficient=2.0,
+        maximum_interval=timedelta(seconds=30),
+        maximum_attempts=3,
+    ),
+)
 
 
 @dataclass
@@ -33,9 +54,12 @@ async def run_agent(
 ) -> AgentRunResult:
     """Runs one ADK agent turn and returns its final text response.
 
-    The agent's model is a LiteLlm wrapper, which routes the request through
-    LiteLLM's OpenAI-compatible client. Point it at a LiteLLM gateway by
-    setting OPENAI_API_BASE; otherwise it calls OpenAI directly.
+    The agent's model is `TemporalModel`, which resolves `ADK_MODEL` through
+    ADK's `LLMRegistry` — an `openai/...`-prefixed name still resolves to a
+    `LiteLlm`-backed call under the hood, so `OPENAI_API_BASE`/`OPENAI_API_KEY`
+    (e.g. pointed at an org LiteLLM gateway) work exactly as before; the only
+    difference is that call now happens inside Temporal's own `invoke_model`
+    Activity instead of one we wrote ourselves.
 
     When allow_clarification is False, the agent is never allowed to pause
     the workflow to ask the user something — used for activities that run
@@ -46,15 +70,17 @@ async def run_agent(
 
     agent = LlmAgent(
         name=name,
-        model=LiteLlm(model=model_name),
+        model=TemporalModel(
+            model_name,
+            activity_config=ActivityConfig(**DEFAULT_ACTIVITY_CONFIG, summary=name),
+        ),
         instruction=instruction + CLARIFY_CONVENTION if allow_clarification else instruction,
     )
 
     app_name = "temporal-adk-poc"
     user_id = "poc-user"
-    session_service = InMemorySessionService()
-    session = await session_service.create_session(app_name=app_name, user_id=user_id)
-    runner = Runner(agent=agent, app_name=app_name, session_service=session_service)
+    runner = InMemoryRunner(agent=agent, app_name=app_name)
+    session = await runner.session_service.create_session(app_name=app_name, user_id=user_id)
 
     parts = [types.Part(text=prompt)]
     if image_bytes:

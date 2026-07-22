@@ -1,3 +1,3 @@
-from .activity import risk_scoring_activity
+from .step import run_risk_scoring
 
-__all__ = ["risk_scoring_activity"]
+__all__ = ["run_risk_scoring"]

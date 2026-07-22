@@ -1,14 +1,18 @@
-from temporalio import activity
+import logging
 
 from runner import run_agent
 from shared import AgentRequest, AgentResponse
 
 from .prompt import INSTRUCTION
 
+logger = logging.getLogger(__name__)
 
-@activity.defn
-async def architecture_evaluator_activity(request: AgentRequest) -> AgentResponse:
-    activity.logger.info("Running architecture evaluator agent")
+
+async def run_architecture_evaluator(request: AgentRequest) -> AgentResponse:
+    """Called directly from workflow code — the LLM call itself is proxied
+    to a Temporal Activity by TemporalModel, so this no longer needs to be
+    an @activity.defn itself."""
+    logger.info("Running architecture evaluator agent")
     architecture_notes = request.context.strip() or "(none provided)"
     result = await run_agent(
         name="architecture_evaluator",

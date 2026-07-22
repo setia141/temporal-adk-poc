@@ -1,3 +1,3 @@
-from .activity import triage_classification_activity
+from .step import run_triage_classification
 
-__all__ = ["triage_classification_activity"]
+__all__ = ["run_triage_classification"]
