@@ -417,6 +417,14 @@ exposes it as a "Correct earlier info" form.
 - `LiteLlm(model="openai/gpt-4o-mini")` is ADK's documented way to route a
   model through LiteLLM; change `ADK_MODEL` in `.env` to use a different
   OpenAI model (or any other LiteLLM-supported provider/gateway).
+- `ADK_MODEL` values with a provider prefix (`openai/...`, `anthropic/...`,
+  `vertex_ai/...`, `azure/...`, `bedrock/...`, ...) all route through LiteLLM,
+  so `OPENAI_API_BASE`/`AI_GATEWAY_HEADERS` (see `.env.example`) apply to all
+  of them, not just OpenAI. A **bare** model name with no prefix
+  (`gemini-2.0-flash`, `claude-sonnet-4-...`) takes a different path entirely —
+  ADK's own native `Gemini`/`Claude` classes call `google.genai`/`anthropic`
+  directly, bypassing LiteLLM, so neither of those env vars has any effect on
+  those. Use the prefixed form if you need gateway routing.
 - Activities (not the workflow) do all ADK/LiteLLM/network work, since
   Temporal workflow code must be deterministic and the ADK SDK is not
   sandbox-safe.

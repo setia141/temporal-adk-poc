@@ -60,27 +60,39 @@ recommended to merge as-is** — see Verdict below.
    Temporal's SDK has a hardcoded 2-second "did the workflow coroutine yield"
    deadlock detector (`temporalio/worker/_workflow.py`: `_deadlock_timeout_seconds = None if debug_mode else 2`
    — no tunable threshold, only fully on or fully off via `Worker(debug_mode=True)`).
-   ADK's `Runner`/session-construction path does enough synchronous work on
-   a call that it can exceed 2 seconds before yielding, which trips this
-   detector. Observed consequence: this didn't just fail-and-cleanly-retry
-   the workflow task — the worker process's own eviction handling got stuck
-   (`"Failed running eviction job... this worker may not complete and the
-   slot may remain forever used"`), and the only way to recover was to kill
-   that worker process and start a fresh one. Setting `debug_mode=True`
-   avoided the failure entirely (confirmed the pipeline completes cleanly
-   under it) — but that flag disables deadlock detection *entirely*, which
-   is meant for interactive debugging, not routine production use. It masks
-   a real problem rather than fixing it.
+   Root cause identified: ADK's flow code (`google/adk/flows/llm_flows/contents.py`)
+   unconditionally imports `google.adk.labs.openai`, which imports the full
+   `openai` SDK — and `GoogleAdkPlugin` only passes `google.adk`/`google.genai`/`mcp`
+   through the sandbox, so `openai` (and `litellm`, the actual HTTP layer) got
+   freshly re-imported inside the sandbox on the first call, and that import alone
+   exceeded the 2-second budget. **Fixed** by passing `openai`/`litellm` through
+   the sandbox ourselves (`worker.py`'s `workflow_runner=SandboxedWorkflowRunner(...)`)
+   — `GoogleAdkPlugin`'s own passthrough additions layer on top of this instead of
+   replacing it. No `debug_mode` needed; deadlock detection stays fully on.
+
+3. **No way to pass custom LiteLlm/Gemini constructor kwargs (api_base, extra_headers)
+   through `TemporalModel`.** `invoke_model` resolves the model fresh from just the
+   model-name string every call (`LLMRegistry.new_llm(llm_request.model)` →
+   `cls(model=model)`, no other kwargs) — there is no per-call path to inject
+   `api_base`/`extra_headers`, unlike constructing `LiteLlm(...)` directly.
+   Worked around, not fixed: `litellm.headers` (a process-global fallback litellm
+   itself provides) covers every litellm-routed provider, and a small `Gemini`
+   subclass registered in `LLMRegistry` (`runner/gateway_gemini.py`) covers the
+   native (non-litellm) Gemini path the same way. Both required new code and new
+   global state; on `master`, the equivalent is a single kwarg on `LiteLlm(...)`
+   at the call site, no subclassing or registry manipulation.
 
 ## Verdict
 
-Architecturally sound and the custom-gateway concern that started this
-spike is a non-issue — but the deadlock/stuck-worker behavior under normal
-(non-debug) settings is a genuine blocker, not a rough edge to shrug off,
-and matches the plugin's own "experimental, may change" warnings. Given
-`master`'s hand-rolled activity-per-agent approach has none of this risk
-(a slow ADK call inside an Activity is just a slow Activity — Temporal's
-2-second deadlock rule only applies to *workflow* code, never Activities),
-**stay on `master`'s architecture** for now. Revisit this branch once the
-plugin's maturity/documentation catches up, or if a future `temporalio`/
-`google-adk` release resolves the deadlock without needing `debug_mode`.
+Blocker #2 (the deadlock) is fixed, and blocker #1 (mcp import) was already a
+one-line `requirements.txt` fix — so this branch is no longer unsafe to run.
+But blocker #3 changes the honest assessment: the specific thing this spike set
+out to validate — "does a custom LLM gateway still work?" — turns out to cost
+real, ongoing complexity under this architecture (two separate global-state
+workarounds, one per model-resolution path) that doesn't exist at all on
+`master`, where gateway config is a constructor kwarg. What this plugin buys in
+return is Activities you don't have to hand-write (`invoke_model` instead of an
+`@activity.defn` per agent) — real, but modest, and traded against a class of
+sandbox/registry-indirection failure modes `master` simply cannot hit. See the
+chat-recorded comparison for the fuller breakdown. Still experimental per the
+plugin's own docstrings; evaluate on those terms, not as a clear upgrade.
