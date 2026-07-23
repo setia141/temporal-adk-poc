@@ -26,6 +26,10 @@ logger = logging.getLogger(__name__)
 # replaces an entry only when the regex string is identical; a merely
 # equivalent pattern would be appended after the originals and never win.
 _LITELLM_PATTERNS = [
+    # Not in ADK's own litellm provider list (bare gemini-* names resolve to
+    # the native Gemini class instead) — added here so gemini/... routes
+    # through litellm and picks up the gateway config like every other provider.
+    r"gemini/.*",
     r"openai/.*",
     r"azure/.*",
     r"azure_ai/.*",
