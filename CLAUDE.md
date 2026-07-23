@@ -39,7 +39,7 @@ Each of the five agents is a folder under `agents/` holding `prompt.py` (instruc
 - `runner/clarify_prompt.py` — the clarification convention: task-scoped asking only (an agent must not ask about placeholder values in fields its task doesn't depend on), and conversational follow-ups (if the user's reply is itself a question, answer it first, then re-ask).
 - `runner/gateway_litellm.py` — custom-gateway support: `invoke_model` rebuilds the LLM from just the model-name string via `LLMRegistry`, so constructor kwargs can't be passed per-call; when `AI_GATEWAY_BASE_URL`/`AI_GATEWAY_HEADERS` are set, this registers a `LiteLlm` subclass (under litellm's exact existing regex keys — identical strings required for replacement) with those baked in. Registered in `worker.py` at startup.
 - `workflow/intake_workflow.py` — `IntakeWorkflow`, the only orchestration logic.
-- `worker.py` — registers the workflow, `load_attachments_activity`, and the five tool activities (`GoogleAdkPlugin` auto-registers `invoke_model`). Also configures the sandbox passthrough (below).
+- `worker.py` — registers the workflow, `load_attachments_activity`, and the five tool activities (`GoogleAdkPlugin` auto-registers `invoke_model`).
 - `clients/starter.py` / `clients/app.py` — CLI and Streamlit clients; both connect with `plugins=[GoogleAdkPlugin()]`. Both insert the repo root into `sys.path` (they live one level down from the top-level packages).
 
 ### Determinism boundary (critical — different from master)
@@ -48,7 +48,7 @@ Workflow code here *includes* the ADK agent machinery, so the rules apply to mor
 
 - `IntakeWorkflow.run`, `_run_stage`, every `agents/<name>/step.py`, every tool **wrapper**, and `run_agent` itself all execute as workflow code — no network, no randomness, no real timers, no direct I/O anywhere in them. The plugin patches ADK's time/uuid providers to Temporal's deterministic ones.
 - Real I/O lives only in Activities: `invoke_model` (the LLM call), `load_attachments_activity`, and the five `*_activity` functions in `tools.py`.
-- `worker.py` passes `openai`/`litellm` through the workflow sandbox (`SandboxedWorkflowRunner` + `with_passthrough_modules`). ADK's flow code imports them from workflow code; on a cold machine the sandboxed re-import can exceed Temporal's hardcoded 2s deadlock budget (`[TMPRL1101]`, observed here — it wedges the worker, not just the task). The plugin's own passthroughs (`google.adk`/`google.genai`/`mcp`) layer on top.
+- The worker uses the default sandbox config; the plugin passes `google.adk`/`google.genai`/`mcp` through. If the first LLM call ever dies with `[TMPRL1101]` (deadlock detector — wedges the worker), the fix is re-adding `SandboxedWorkflowRunner` with `with_passthrough_modules("openai", "litellm")` in `worker.py`: ADK imports those from workflow code, and a cold-machine sandboxed re-import can exceed the 2s budget (observed once here; see MIGRATION_NOTES.md blocker #2).
 
 ### Clarification / confirmation / amendment flow
 

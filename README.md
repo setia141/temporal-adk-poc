@@ -91,8 +91,7 @@ workflow/
                         checkpoint, mid-run amendments
 worker.py               Long-lived worker: registers the workflow, the
                         attachment activity, and the five tool activities;
-                        configures the sandbox passthrough and the gateway
-                        registry override
+                        configures the gateway registry override
 clients/
   starter.py            CLI client (multi-attachment prompts, confirmation
                         checkpoint, amend command, clarification answers)
@@ -235,11 +234,12 @@ client/session values as plain parameters. `app.py` logs to
 - Model selection is `ADK_MODEL` in `.env` (default `openai/gpt-4o-mini`);
   any litellm provider prefix works, and the gateway env vars apply to all
   of them uniformly.
-- `worker.py` passes `openai`/`litellm` through the workflow sandbox: ADK's
-  flow code imports them from workflow code, and on a cold machine that
-  sandboxed re-import can exceed Temporal's hardcoded 2-second deadlock
-  budget (`[TMPRL1101]` — observed on this machine; it wedges the worker,
-  not just the task). Two lines of insurance against a real failure mode.
+- If the first LLM call ever fails with `[TMPRL1101]` (Temporal's 2-second
+  deadlock detector — it wedges the worker, not just the task), re-add
+  `SandboxedWorkflowRunner` with `with_passthrough_modules("openai",
+  "litellm")` in `worker.py`: ADK imports those inside workflow code, and a
+  cold machine's sandboxed re-import can blow the budget (observed once
+  here; details in `MIGRATION_NOTES.md`).
 - `ARCHITECTURE_STANDARDS` (returned by the architecture evaluator's
   `fetch_architecture_standards` tool) is an invented-but-plausible
   baseline — swap the stub for your org's real standards service.
