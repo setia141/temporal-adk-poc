@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 
-from dotenv import load_dotenv
+from dotenv import find_dotenv, load_dotenv
 from temporalio.client import Client
 from temporalio.contrib.google_adk_agents import GoogleAdkPlugin
 from temporalio.worker import Worker
@@ -16,8 +16,15 @@ from agents.triage_classification import lookup_team_review_capacity_activity
 from runner.gateway_litellm import register_gateway_litellm_if_configured
 from workflow import IntakeWorkflow
 
-load_dotenv()
+_dotenv_path = find_dotenv()
+load_dotenv(_dotenv_path)
 logging.basicConfig(level=logging.INFO)
+logging.info(
+    "Env loaded from: %s | ADK_MODEL=%s | AI_GATEWAY_BASE_URL=%s",
+    _dotenv_path or "(no .env file found)",
+    os.environ.get("ADK_MODEL", "(unset, default openai/gpt-4o-mini)"),
+    os.environ.get("AI_GATEWAY_BASE_URL", "(unset)"),
+)
 
 # Custom gateway (base URL + extra headers) for every litellm-routed ADK_MODEL
 # (openai/..., azure/..., anthropic/..., ...). invoke_model rebuilds the LLM

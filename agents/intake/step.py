@@ -1,3 +1,5 @@
+import base64
+
 from runner import run_agent
 from shared import AgentRequest, AgentResponse
 
@@ -16,9 +18,11 @@ async def run_intake(request: AgentRequest, attachments: list[Attachment]) -> Ag
     for i, attachment in enumerate(attachments):
         if attachment.text:
             text_sections.append(f"\n\nSupporting attachment #{i + 1}:\n{attachment.text}")
-        elif attachment.image_bytes:
+        elif attachment.image_b64:
             text_sections.append(f"\n\n(Supporting image #{i + 1} attached below.)")
-            images.append((attachment.image_bytes, attachment.image_mime_type))
+            images.append(
+                (base64.b64decode(attachment.image_b64), attachment.image_mime_type)
+            )
     attachment_section = "".join(text_sections)
 
     result = await run_agent(

@@ -1,7 +1,8 @@
 """Parses a user-supplied attachment (PDF, image, or text/markdown) into
-either extractable text or raw image bytes, for the intake activity to fold
-into its prompt to the LLM."""
+either extractable text or base64-encoded image data, for the intake step to
+fold into its prompt to the LLM."""
 
+import base64
 import io
 import mimetypes
 from dataclasses import dataclass
@@ -15,7 +16,10 @@ TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".log"}
 @dataclass
 class Attachment:
     text: str = ""  # extracted/read text to fold into the prompt
-    image_bytes: bytes | None = None  # raw bytes if this is an image, for the vision model
+    # Images are carried base64-encoded, not as raw bytes: this dataclass is
+    # an activity return value on this branch, and the plugin's pydantic JSON
+    # payload converter cannot serialize non-UTF-8 raw bytes.
+    image_b64: str = ""
     image_mime_type: str = ""
 
 
@@ -35,7 +39,10 @@ def load_attachment(data: bytes, filename: str) -> Attachment:
             return Attachment(text=data.decode("utf-8"))
         mime_type, _ = mimetypes.guess_type(filename)
         if mime_type and mime_type.startswith("image/"):
-            return Attachment(image_bytes=data, image_mime_type=mime_type)
+            return Attachment(
+                image_b64=base64.b64encode(data).decode("ascii"),
+                image_mime_type=mime_type,
+            )
         return Attachment(text=f"(Unsupported attachment type: {filename})")
     except Exception as exc:
         activity.logger.warning("Attachment parse failed for %s: %s", filename, exc)

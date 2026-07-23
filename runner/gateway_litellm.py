@@ -13,10 +13,13 @@ Only registered when AI_GATEWAY_BASE_URL or AI_GATEWAY_HEADERS is set (see
 worker.py); a no-op otherwise, leaving stock LiteLlm resolution unchanged.
 """
 
+import logging
 import os
 
 from google.adk.models import LLMRegistry
 from google.adk.models.lite_llm import LiteLlm
+
+logger = logging.getLogger(__name__)
 
 # Must exactly match the regex strings ADK pre-registers for LiteLlm
 # (google/adk/models/__init__.py _LAZY_PROVIDERS) — LLMRegistry._register
@@ -65,5 +68,17 @@ class GatewayLiteLlm(LiteLlm):
 
 
 def register_gateway_litellm_if_configured() -> None:
-    if os.environ.get("AI_GATEWAY_BASE_URL") or os.environ.get("AI_GATEWAY_HEADERS"):
+    base_url = os.environ.get("AI_GATEWAY_BASE_URL")
+    headers = _gateway_headers()
+    if base_url or headers:
+        # Header names only — values may be secrets.
+        logger.info(
+            "Custom gateway ACTIVE: base_url=%s header_names=%s — registering GatewayLiteLlm",
+            base_url or "(not set — provider default)", sorted(headers),
+        )
         LLMRegistry.register(GatewayLiteLlm)
+    else:
+        logger.info(
+            "Custom gateway NOT configured (AI_GATEWAY_BASE_URL/AI_GATEWAY_HEADERS "
+            "unset or commented) — model calls go to the provider's default endpoint"
+        )
