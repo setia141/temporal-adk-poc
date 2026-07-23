@@ -1,32 +1,32 @@
-import logging
-
 from runner import run_agent
 from shared import AgentRequest, AgentResponse
 
 from .attachment import Attachment
 from .prompt import INSTRUCTION
+from .tools import lookup_requesting_team
 
-logger = logging.getLogger(__name__)
 
-
-async def run_intake(request: AgentRequest, attachment: Attachment) -> AgentResponse:
+async def run_intake(request: AgentRequest, attachments: list[Attachment]) -> AgentResponse:
     """Called directly from workflow code — the LLM call itself is proxied
-    to a Temporal Activity by TemporalModel. `attachment` is fetched and
+    to a Temporal Activity by TemporalModel. `attachments` are fetched and
     parsed separately (see attachment_activity.py), since that's genuine I/O
     unrelated to the LLM call itself and stays a real Activity."""
-    logger.info("Running intake preparation agent")
-    attachment_section = ""
-    if attachment.text:
-        attachment_section = f"\n\nSupporting attachment text:\n{attachment.text}"
-    elif attachment.image_bytes:
-        attachment_section = "\n\n(A supporting image is attached below.)"
+    text_sections = []
+    images: list[tuple[bytes, str]] = []
+    for i, attachment in enumerate(attachments):
+        if attachment.text:
+            text_sections.append(f"\n\nSupporting attachment #{i + 1}:\n{attachment.text}")
+        elif attachment.image_bytes:
+            text_sections.append(f"\n\n(Supporting image #{i + 1} attached below.)")
+            images.append((attachment.image_bytes, attachment.image_mime_type))
+    attachment_section = "".join(text_sections)
 
     result = await run_agent(
         name="intake_preparation",
         instruction=INSTRUCTION,
         prompt=f"Raw intake form:\n{request.subject}\n\n{request.context}{attachment_section}".strip(),
-        image_bytes=attachment.image_bytes,
-        image_mime_type=attachment.image_mime_type,
+        images=images,
+        tools=[lookup_requesting_team],
     )
     return AgentResponse(
         agent_name="intake_preparation",

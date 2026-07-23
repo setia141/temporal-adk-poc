@@ -172,6 +172,11 @@ async def submit_amendment(client: Client, workflow_id: str, field: str, value: 
     await handle.execute_update(IntakeWorkflow.submit_amendment, args=[field, value])
 
 
+async def confirm_intake_summary(client: Client, workflow_id: str) -> None:
+    handle = client.get_workflow_handle(workflow_id)
+    await handle.execute_update(IntakeWorkflow.confirm_intake_summary)
+
+
 if not st.session_state.running:
     try:
         open_runs = run_async(list_open_workflows(get_temporal_client()))
@@ -193,6 +198,8 @@ if not st.session_state.running:
                     where = "completed — view result"
                 elif status.waiting_for_input:
                     where = f"paused — {status.stage} asked: {status.pending_question}"
+                elif status.awaiting_confirmation:
+                    where = "paused — review intake summary before continuing"
                 else:
                     where = f"{status.stage} in progress"
                 labels[f"\"{status.summary}\"  —  {where}"] = execution.id
@@ -232,17 +239,17 @@ else:
             "evaluator ask a clarifying question — clear this field entirely to see "
             "it skip the review instead, or fill in real details to see a real review.",
         )
-        attachment_upload = st.file_uploader(
-            "Supporting attachment (optional)",
+        attachment_uploads = st.file_uploader(
+            "Supporting attachments (optional)",
             type=["pdf", "png", "jpg", "jpeg", "gif", "webp", "txt", "md", "csv", "json"],
+            accept_multiple_files=True,
         )
         submitted = st.form_submit_button("Submit intake request", type="primary")
 
     if submitted:
-        attachment_ref, attachment_filename = "", ""
-        if attachment_upload is not None:
-            attachment_ref = get_attachment_store().put(attachment_upload.getvalue(), attachment_upload.name)
-            attachment_filename = attachment_upload.name
+        store = get_attachment_store()
+        attachment_refs = [store.put(f.getvalue(), f.name) for f in attachment_uploads]
+        attachment_filenames = [f.name for f in attachment_uploads]
 
         form = IntakeForm(
             api_name=api_name,
@@ -251,8 +258,8 @@ else:
             expected_consumers=expected_consumers,
             data_sensitivity=data_sensitivity,
             architecture_notes=architecture_notes,
-            attachment_ref=attachment_ref,
-            attachment_filename=attachment_filename,
+            attachment_refs=attachment_refs,
+            attachment_filenames=attachment_filenames,
         )
         try:
             workflow_id = run_async(
@@ -353,6 +360,18 @@ def render_pipeline_status():
                 run_async(submit_answer(get_temporal_client(), workflow_id, answer))
             except temporalio.client.WorkflowUpdateFailedError as exc:
                 st.error(f"Answer rejected: {exc}")
+            else:
+                st.rerun()
+    elif status.awaiting_confirmation:
+        st.info(
+            "Intake summary above is ready for review — confirm to continue into "
+            "triage, or use \"Correct earlier info\" above to fix something first."
+        )
+        if st.button("Looks good, continue", type="primary"):
+            try:
+                run_async(confirm_intake_summary(get_temporal_client(), workflow_id))
+            except temporalio.client.WorkflowUpdateFailedError as exc:
+                st.error(f"Confirmation rejected: {exc}")
             else:
                 st.rerun()
     elif status.is_complete:

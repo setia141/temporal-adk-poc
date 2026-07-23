@@ -70,29 +70,39 @@ recommended to merge as-is** — see Verdict below.
    — `GoogleAdkPlugin`'s own passthrough additions layer on top of this instead of
    replacing it. No `debug_mode` needed; deadlock detection stays fully on.
 
-3. **No way to pass custom LiteLlm/Gemini constructor kwargs (api_base, extra_headers)
+3. **No way to pass custom LiteLlm constructor kwargs (api_base, extra_headers)
    through `TemporalModel`.** `invoke_model` resolves the model fresh from just the
    model-name string every call (`LLMRegistry.new_llm(llm_request.model)` →
    `cls(model=model)`, no other kwargs) — there is no per-call path to inject
    `api_base`/`extra_headers`, unlike constructing `LiteLlm(...)` directly.
-   Worked around, not fixed: `litellm.headers` (a process-global fallback litellm
-   itself provides) covers every litellm-routed provider, and a small `Gemini`
-   subclass registered in `LLMRegistry` (`runner/gateway_gemini.py`) covers the
-   native (non-litellm) Gemini path the same way. Both required new code and new
-   global state; on `master`, the equivalent is a single kwarg on `LiteLlm(...)`
-   at the call site, no subclassing or registry manipulation.
+   Resolved via `runner/gateway_litellm.py`: a `LiteLlm` subclass with
+   `AI_GATEWAY_BASE_URL`/`AI_GATEWAY_HEADERS` baked into its constructor,
+   re-registered over litellm's exact regex keys in `LLMRegistry` at worker
+   startup, so name-only resolution still yields a fully configured client.
+   On `master`, the same thing is a single kwarg on `LiteLlm(...)` at the call
+   site — no registry manipulation needed.
+
+4. **Plain ADK `FunctionTool`s are unsafe out of the box.** The plugin proxies
+   only the model call (and, optionally, MCP toolsets) to activities; a normal
+   `LlmAgent(tools=[fn])` function executes inline in workflow code, which is a
+   determinism violation the moment it does real I/O. Resolved with the
+   activity + wrapper pattern in `agents/<name>/tools.py`: the agent calls a
+   same-signature workflow-side wrapper that immediately dispatches the real
+   work to its own `@activity.defn`. On `master`, tools just run inside the
+   agent's activity with no extra ceremony.
 
 ## Verdict
 
-Blocker #2 (the deadlock) is fixed, and blocker #1 (mcp import) was already a
-one-line `requirements.txt` fix — so this branch is no longer unsafe to run.
-But blocker #3 changes the honest assessment: the specific thing this spike set
-out to validate — "does a custom LLM gateway still work?" — turns out to cost
-real, ongoing complexity under this architecture (two separate global-state
-workarounds, one per model-resolution path) that doesn't exist at all on
-`master`, where gateway config is a constructor kwarg. What this plugin buys in
-return is Activities you don't have to hand-write (`invoke_model` instead of an
-`@activity.defn` per agent) — real, but modest, and traded against a class of
-sandbox/registry-indirection failure modes `master` simply cannot hit. See the
-chat-recorded comparison for the fuller breakdown. Still experimental per the
-plugin's own docstrings; evaluate on those terms, not as a clear upgrade.
+All four blockers now have working resolutions on this branch, and the full
+feature set from `master` (agent tools, conversational clarifications with
+follow-up handling, multi-attachment support, the intake confirmation
+checkpoint, mid-run amendments, call logging) has been ported on top of the
+plugin architecture. The honest trade-off is unchanged in kind, just smaller
+in degree: the plugin saves hand-written per-agent activities and gives
+per-LLM-call visibility/retries for free, but everything that crosses its
+name-string model resolution (gateway config) or its workflow-code execution
+model (tools) needs an indirection (`LLMRegistry` override, activity-wrapper
+pattern) that `master` simply doesn't need. Both branches are now
+feature-equivalent and runnable; the plugin remains experimental per its own
+docstrings — pick per deployment based on whether per-call activity
+granularity is worth the indirections.

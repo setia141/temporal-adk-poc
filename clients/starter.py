@@ -27,16 +27,21 @@ def _prompt(label: str, default: str) -> str:
     return answer or default
 
 
+def _collect_attachments() -> tuple[list[str], list[str]]:
+    print("Supporting attachments (PDF/image/text, optional). One path per line, blank to stop.")
+    refs, filenames = [], []
+    while True:
+        path = _prompt(f"  Attachment #{len(refs) + 1} path (blank to stop)", "")
+        if not path:
+            return refs, filenames
+        with open(path, "rb") as f:
+            refs.append(get_attachment_store().put(f.read(), os.path.basename(path)))
+        filenames.append(os.path.basename(path))
+
+
 def collect_form() -> IntakeForm:
     print("New API intake request (press Enter to accept the [default]):\n")
-    attachment_path = _prompt(
-        "Supporting attachment path (PDF/image/text, optional, blank to skip)", ""
-    )
-    attachment_ref, attachment_filename = "", ""
-    if attachment_path:
-        with open(attachment_path, "rb") as f:
-            attachment_ref = get_attachment_store().put(f.read(), os.path.basename(attachment_path))
-        attachment_filename = os.path.basename(attachment_path)
+    attachment_refs, attachment_filenames = _collect_attachments()
 
     return IntakeForm(
         api_name=_prompt("API name", "Order Status API"),
@@ -48,8 +53,8 @@ def collect_form() -> IntakeForm:
             "Architecture notes (optional)",
             "We plan to reuse some existing infrastructure but haven't finalized the design yet.",
         ),
-        attachment_ref=attachment_ref,
-        attachment_filename=attachment_filename,
+        attachment_refs=attachment_refs,
+        attachment_filenames=attachment_filenames,
     )
 
 
@@ -139,6 +144,25 @@ async def main() -> None:
                     await handle.execute_update(IntakeWorkflow.submit_answer, answer)
                 except temporalio.client.WorkflowUpdateFailedError as exc:
                     print(f"Answer rejected: {exc}")
+            command_task = asyncio.ensure_future(_read_line("> "))
+        elif status.awaiting_confirmation:
+            if not command_task.done():
+                command_task.cancel()
+            intake_summary = next(
+                (e.text for e in reversed(status.transcript) if e.agent_name == "intake"),
+                "(no summary found)",
+            )
+            print(f"\n=== Intake summary (review before continuing) ===\n{intake_summary}")
+            command = input(
+                "\nPress Enter to confirm and continue, or 'amend <field>=<value>' to correct it\n> "
+            )
+            if command.lower().startswith("amend "):
+                await _handle_amend_command(handle, command)
+            else:
+                try:
+                    await handle.execute_update(IntakeWorkflow.confirm_intake_summary)
+                except temporalio.client.WorkflowUpdateFailedError as exc:
+                    print(f"Confirmation rejected: {exc}")
             command_task = asyncio.ensure_future(_read_line("> "))
         else:
             done, _ = await asyncio.wait({command_task}, timeout=1)

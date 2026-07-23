@@ -14,12 +14,14 @@ and patches ADK's time/uuid providers to Temporal's deterministic ones).
 """
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 
 from google.adk.agents import LlmAgent
 from google.adk.runners import InMemoryRunner
 from google.genai import types
+from temporalio import workflow
 from temporalio.common import RetryPolicy
 from temporalio.contrib.google_adk_agents import TemporalModel
 from temporalio.workflow import ActivityConfig
@@ -49,24 +51,36 @@ async def run_agent(
     instruction: str,
     prompt: str,
     allow_clarification: bool = True,
-    image_bytes: bytes | None = None,
-    image_mime_type: str = "",
+    images: list[tuple[bytes, str]] | None = None,
+    tools: list[Callable] | None = None,
 ) -> AgentRunResult:
     """Runs one ADK agent turn and returns its final text response.
 
     The agent's model is `TemporalModel`, which resolves `ADK_MODEL` through
-    ADK's `LLMRegistry` — an `openai/...`-prefixed name still resolves to a
-    `LiteLlm`-backed call under the hood, so `OPENAI_API_BASE`/`OPENAI_API_KEY`
-    (e.g. pointed at an org LiteLLM gateway) work exactly as before; the only
-    difference is that call now happens inside Temporal's own `invoke_model`
-    Activity instead of one we wrote ourselves.
+    ADK's `LLMRegistry` — an `openai/...`-prefixed name resolves to a
+    `LiteLlm`-backed call (see runner/gateway_litellm.py for custom gateway
+    base-URL/header injection); the call itself happens inside Temporal's
+    own `invoke_model` Activity.
 
     When allow_clarification is False, the agent is never allowed to pause
-    the workflow to ask the user something — used for activities that run
-    in parallel with another activity, since the workflow's clarification
-    state only supports one pending question at a time.
+    the workflow to ask the user something — used for stages that run in
+    parallel with another stage, since the workflow's clarification state
+    only supports one pending question at a time.
+
+    tools are the workflow-side wrapper functions from agents/<name>/tools.py:
+    ADK wraps each in a FunctionTool and drives the tool-calling loop here in
+    workflow code, and each wrapper immediately dispatches its real work to
+    its own Temporal activity — never do real I/O directly in a tool passed
+    here, since this function runs as workflow code.
     """
     model_name = os.environ.get("ADK_MODEL", "openai/gpt-4o-mini")
+    # workflow.logger is replay-safe (suppressed during replay), unlike a
+    # plain module logger, which would double-log every recorded call.
+    workflow.logger.info(
+        "LLM call: agent=%s model=%s prompt_chars=%d images=%d tools=%s",
+        name, model_name, len(prompt), len(images or []),
+        [t.__name__ for t in tools or []],
+    )
 
     agent = LlmAgent(
         name=name,
@@ -75,6 +89,7 @@ async def run_agent(
             activity_config=ActivityConfig(**DEFAULT_ACTIVITY_CONFIG, summary=name),
         ),
         instruction=instruction + CLARIFY_CONVENTION if allow_clarification else instruction,
+        tools=tools or [],
     )
 
     app_name = "temporal-adk-poc"
@@ -83,7 +98,7 @@ async def run_agent(
     session = await runner.session_service.create_session(app_name=app_name, user_id=user_id)
 
     parts = [types.Part(text=prompt)]
-    if image_bytes:
+    for image_bytes, image_mime_type in images or []:
         parts.append(types.Part.from_bytes(data=image_bytes, mime_type=image_mime_type))
     content = types.Content(role="user", parts=parts)
 
@@ -95,6 +110,11 @@ async def run_agent(
     ):
         if event.is_final_response() and event.content and event.content.parts:
             final_text = "".join(p.text or "" for p in event.content.parts)
+
+    workflow.logger.info(
+        "LLM response: agent=%s response_chars=%d preview=%r",
+        name, len(final_text), final_text[:200],
+    )
 
     if not allow_clarification:
         return AgentRunResult(output=final_text)
@@ -109,26 +129,26 @@ async def run_agent(
             return normalized[len(CLARIFY_PREFIX):].strip(" :*_`")
         return ""
 
-    question = _match_prefix(stripped)
-    if question:
-        return AgentRunResult(output=final_text, needs_clarification=True, question=question)
-
-    # Some models append the marker as an extra line alongside a partial
-    # answer instead of replying with only that line, despite instructions.
-    # Scan every line: a CLARIFY_NEEDED: line anywhere means the model is
-    # trying to ask something, and it must not be silently absorbed into
-    # the "final" output — better to pause and ask than ship a half answer.
-    for line in stripped.splitlines():
+    # A CLARIFY_NEEDED: line anywhere in the response means the model is
+    # trying to ask something (covers both the simple "entire response is
+    # just that line" case and a model that explains something — e.g.
+    # answering a follow-up question from the user — before re-asking).
+    # display keeps any such explanatory text but replaces the raw marker
+    # line with the bare question, so the user sees the full conversational
+    # reply instead of just the extracted question.
+    lines = stripped.splitlines()
+    for i, line in enumerate(lines):
         question = _match_prefix(line)
         if question:
-            return AgentRunResult(output=final_text, needs_clarification=True, question=question)
+            display = "\n".join([*lines[:i], question, *lines[i + 1 :]]).strip()
+            return AgentRunResult(output=display, needs_clarification=True, question=question)
 
     # Fallback: some models ask their clarifying question in plain prose
     # instead of using the required prefix. A short, single-line response
     # ending in "?" is almost certainly a question, not a finished answer —
     # treat it as one rather than silently shipping it as the final output.
-    lines = [line for line in stripped.splitlines() if line.strip()]
-    if len(lines) == 1 and stripped.endswith("?") and len(stripped) < 300:
-        return AgentRunResult(output=final_text, needs_clarification=True, question=stripped)
+    non_blank_lines = [line for line in lines if line.strip()]
+    if len(non_blank_lines) == 1 and stripped.endswith("?") and len(stripped) < 300:
+        return AgentRunResult(output=stripped, needs_clarification=True, question=stripped)
 
     return AgentRunResult(output=final_text)

@@ -2,37 +2,29 @@ import asyncio
 import logging
 import os
 
-import litellm
 from dotenv import load_dotenv
 from temporalio.client import Client
 from temporalio.contrib.google_adk_agents import GoogleAdkPlugin
 from temporalio.worker import Worker
 from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
 
-from agents.intake import load_attachment_activity
-from runner.gateway_gemini import register_gateway_gemini_if_configured
+from agents.architecture_evaluator import fetch_architecture_standards_activity
+from agents.complexity_assessment import lookup_downstream_dependencies_activity
+from agents.intake import load_attachments_activity, lookup_requesting_team_activity
+from agents.risk_scoring import lookup_prior_incidents_activity
+from agents.triage_classification import lookup_team_review_capacity_activity
+from runner.gateway_litellm import register_gateway_litellm_if_configured
 from workflow import IntakeWorkflow
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
-# Custom gateway headers (e.g. an API key header your gateway wants beyond
-# OPENAI_API_KEY, a tenant/routing header, etc). LLMRegistry.new_llm(...)
-# rebuilds a fresh LiteLlm from just the model name inside invoke_model, so
-# there's no per-call way to inject extra_headers through that path — this
-# process-global fallback is what litellm's own completion() calls use
-# whenever no explicit `headers` kwarg is passed. Setting it here (worker.py
-# runs unsandboxed, unlike workflow code) applies it to every model call.
-# Covers every litellm-routed ADK_MODEL (openai/..., azure/..., anthropic/...).
-if gateway_headers := os.environ.get("AI_GATEWAY_HEADERS"):
-    litellm.headers = dict(
-        pair.split("=", 1) for pair in gateway_headers.split(",") if pair
-    )
-
-# Bare model names (gemini-...) skip litellm entirely and call google.genai
-# directly, so the litellm.headers line above doesn't cover them — this reuses
-# the same AI_GATEWAY_HEADERS env var for that path. See gateway_gemini.py.
-register_gateway_gemini_if_configured()
+# Custom gateway (base URL + extra headers) for every litellm-routed ADK_MODEL
+# (openai/..., azure/..., anthropic/..., ...). invoke_model rebuilds the LLM
+# from just the model-name string via LLMRegistry, so constructor kwargs can't
+# be passed per-call — instead this re-registers a LiteLlm subclass with
+# AI_GATEWAY_BASE_URL/AI_GATEWAY_HEADERS baked in. See gateway_litellm.py.
+register_gateway_litellm_if_configured()
 
 
 async def main() -> None:
@@ -47,15 +39,24 @@ async def main() -> None:
         task_queue=task_queue,
         workflows=[IntakeWorkflow],
         # GoogleAdkPlugin auto-registers its own invoke_model/invoke_model_streaming
-        # activities (see _plugin.py) — load_attachment_activity is the only
-        # activity this project still defines by hand.
-        activities=[load_attachment_activity],
+        # activities (see _plugin.py). The hand-written activities are the
+        # attachment loader plus one activity per agent tool (the real work
+        # behind the workflow-side wrappers in agents/<name>/tools.py).
+        activities=[
+            load_attachments_activity,
+            lookup_requesting_team_activity,
+            lookup_prior_incidents_activity,
+            lookup_downstream_dependencies_activity,
+            lookup_team_review_capacity_activity,
+            fetch_architecture_standards_activity,
+        ],
         # ADK's content flow imports openai/litellm inside workflow code (not the
-        # activity) to resolve the model backend. The plugin only passes through
-        # google.adk/google.genai/mcp, so the first sandboxed import of these two
-        # heavy SDKs blows Temporal's 2s deadlock-detector budget. Passing them
-        # through here means the plugin's own passthrough additions layer on top
-        # of this instead of replacing it.
+        # activity) to resolve the model backend, and the plugin only passes
+        # google.adk/google.genai/mcp through the sandbox. On a cold machine that
+        # first sandboxed import of two heavy SDKs can exceed Temporal's 2s
+        # deadlock-detector budget ([TMPRL1101], observed on this machine —
+        # wedges the worker, not just the task). Passing them through here is
+        # cheap insurance; the plugin's own passthrough additions layer on top.
         workflow_runner=SandboxedWorkflowRunner(
             restrictions=SandboxRestrictions.default.with_passthrough_modules(
                 "openai", "litellm"

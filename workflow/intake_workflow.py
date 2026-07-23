@@ -7,8 +7,7 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from agents.architecture_evaluator import run_architecture_evaluator
     from agents.complexity_assessment import run_complexity_assessment
-    from agents.intake import AttachmentFetchRequest, load_attachment_activity, run_intake
-    from agents.intake.attachment import Attachment
+    from agents.intake import AttachmentFetchRequest, load_attachments_activity, run_intake
     from agents.risk_scoring import run_risk_scoring
     from agents.triage_classification import run_triage_classification
     from shared import AgentRequest, IntakeForm, IntakeResult, IntakeStatus, TranscriptEntry
@@ -49,9 +48,11 @@ class IntakeWorkflow:
     GoogleAdkPlugin, configured on the Worker's Client in worker.py) rather
     than by a hand-written `@activity.defn` per agent — so run_intake /
     run_risk_scoring / etc. are awaited directly here, not dispatched via
-    workflow.execute_activity. The one thing that's still a genuine
-    Activity is load_attachment_activity, since fetching/parsing an
-    attachment is real I/O unrelated to any LLM call.
+    workflow.execute_activity. Agent tools work the same way: the wrapper
+    the agent calls runs here in workflow code, and it dispatches the real
+    work to its own activity (see agents/<name>/tools.py). The remaining
+    hand-written activities are those tool activities plus
+    load_attachments_activity.
     """
 
     def __init__(self) -> None:
@@ -65,6 +66,7 @@ class IntakeWorkflow:
         self._result: IntakeResult | None = None
         self._form: IntakeForm | None = None
         self._pending_amendment: str | None = None  # a STAGE_ORDER name, or None
+        self._awaiting_confirmation: bool = False
 
     async def _run_stage(self, agent_name: str, step_fn, request: AgentRequest):
         """Returns an AgentResponse, or None if an amendment arrived while
@@ -78,9 +80,14 @@ class IntakeWorkflow:
                 self._transcript.append(TranscriptEntry(agent_name, "output", response.output))
                 return response
 
-            self._transcript.append(TranscriptEntry(agent_name, "question", response.question))
+            # response.output (not response.question) is what's shown to the
+            # user: when the agent is answering a follow-up question before
+            # re-asking (see CLARIFY_CONVENTION), response.output is that
+            # full conversational reply — response.question alone would be
+            # just the bare re-asked question, silently dropping the answer.
+            self._transcript.append(TranscriptEntry(agent_name, "question", response.output))
             self._pending_agent = agent_name
-            self._pending_question = response.question
+            self._pending_question = response.output
             await workflow.wait_condition(
                 lambda: self._latest_answer is not None or self._pending_amendment is not None
             )
@@ -116,22 +123,35 @@ class IntakeWorkflow:
                     f"Expected consumers: {form.expected_consumers}\n"
                     f"Data sensitivity: {form.data_sensitivity}"
                 )
-                attachment = Attachment()
-                if form.attachment_ref:
-                    attachment = await workflow.execute_activity(
-                        load_attachment_activity,
+                attachments = []
+                if form.attachment_refs:
+                    attachments = await workflow.execute_activity(
+                        load_attachments_activity,
                         AttachmentFetchRequest(
-                            ref=form.attachment_ref, filename=form.attachment_filename
+                            refs=form.attachment_refs, filenames=form.attachment_filenames
                         ),
                         start_to_close_timeout=timedelta(minutes=2),
                         retry_policy=DEFAULT_RETRY_POLICY,
                     )
                 intake = await self._run_stage(
                     "intake",
-                    lambda req, _attachment=attachment: run_intake(req, _attachment),
+                    lambda req, _attachments=attachments: run_intake(req, _attachments),
                     AgentRequest(subject=form_text),
                 )
                 if intake is None:
+                    restart_from = self._pending_amendment
+                    continue
+
+                # Review checkpoint: surface the canonical summary (built from
+                # the form plus every attachment) and wait for the user to
+                # confirm it — or amend a field, which re-runs intake and
+                # lands back here — before any downstream stage runs.
+                self._awaiting_confirmation = True
+                await workflow.wait_condition(
+                    lambda: not self._awaiting_confirmation or self._pending_amendment is not None
+                )
+                if self._pending_amendment is not None:
+                    self._awaiting_confirmation = False
                     restart_from = self._pending_amendment
                     continue
 
@@ -200,6 +220,19 @@ class IntakeWorkflow:
             raise ValueError("Answer cannot be blank.")
 
     @workflow.update
+    async def confirm_intake_summary(self) -> str:
+        """Approves the just-produced intake summary, letting the pipeline
+        proceed into triage. Call submit_amendment instead to correct a
+        field — that re-runs intake and lands back on this same checkpoint."""
+        self._awaiting_confirmation = False
+        return "confirmed"
+
+    @confirm_intake_summary.validator
+    def _validate_confirm_intake_summary(self) -> None:
+        if not self._awaiting_confirmation:
+            raise ValueError("No intake summary is currently awaiting confirmation.")
+
+    @workflow.update
     async def submit_amendment(self, field: str, value: str) -> str:
         """Corrects a field the user already submitted, even if a later
         stage has already run (or is currently paused asking its own
@@ -235,4 +268,5 @@ class IntakeWorkflow:
             transcript=list(self._transcript),
             is_complete=self._done,
             result=self._result,
+            awaiting_confirmation=self._awaiting_confirmation,
         )

@@ -9,20 +9,20 @@ class IntakeForm:
     expected_consumers: str
     data_sensitivity: str  # "None" | "Internal only" | "PII" | "Confidential/Regulated"
     architecture_notes: str = ""
-    # Optional supporting file (PDF, image, text/markdown, ...). attachment_ref
-    # is an opaque key resolved via attachment_store.get_attachment_store() —
+    # Optional supporting files (PDF, image, text/markdown, ...). Each ref is
+    # an opaque key resolved via attachment_store.get_attachment_store() —
     # never a client-local path, since the workflow may run on a different
-    # host than the client.
-    attachment_ref: str = ""
-    attachment_filename: str = ""
+    # host than the client. Parallel lists, same length, same order.
+    attachment_refs: list[str] = field(default_factory=list)
+    attachment_filenames: list[str] = field(default_factory=list)
 
 
 @dataclass
 class AgentRequest:
     subject: str
     context: str = ""
-    attachment_ref: str = ""
-    attachment_filename: str = ""
+    attachment_refs: list[str] = field(default_factory=list)
+    attachment_filenames: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -58,3 +58,9 @@ class IntakeStatus:
     transcript: list[TranscriptEntry] = field(default_factory=list)
     is_complete: bool = False
     result: IntakeResult | None = None
+    # True right after intake produces its canonical summary, before triage
+    # starts — the user must confirm_intake_summary (or amend a field, which
+    # re-runs intake) to proceed. Distinct from waiting_for_input, which is
+    # the agent itself asking a question; this is a workflow-level review
+    # checkpoint the agent doesn't know about.
+    awaiting_confirmation: bool = False
