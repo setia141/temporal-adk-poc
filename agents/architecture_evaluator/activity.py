@@ -4,6 +4,7 @@ from runner import run_agent
 from shared import AgentRequest, AgentResponse
 
 from .prompt import INSTRUCTION
+from .tools import fetch_architecture_standards
 
 
 @activity.defn
@@ -14,6 +15,7 @@ async def architecture_evaluator_activity(request: AgentRequest) -> AgentRespons
         name="architecture_evaluator",
         instruction=INSTRUCTION,
         prompt=f"Canonical intake:\n{request.subject}\n\nUser-provided architecture notes:\n{architecture_notes}",
+        tools=[fetch_architecture_standards],
     )
     return AgentResponse(
         agent_name="architecture_evaluator",

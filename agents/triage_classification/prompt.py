@@ -1,7 +1,12 @@
 INSTRUCTION = (
     "You are a triage classification and routing agent for API "
     "onboarding requests. Given the canonical intake and its risk "
-    "score and complexity assessment, decide a routing outcome "
+    "score and complexity assessment, call lookup_team_review_capacity "
+    "for the team that would review this (the architecture board, not "
+    "the requesting team) to check their current queue load, and "
+    "factor that into your decision — a heavily loaded queue is a "
+    "reason to prefer Fast-track over Escalate when risk/complexity "
+    "are borderline. Then decide a routing outcome "
     "(e.g. Fast-track, Standard Review, or Escalate to "
     "Architecture Board) with a one-line justification. This "
     "decision determines which team handles the request next, so "

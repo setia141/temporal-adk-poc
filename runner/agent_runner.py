@@ -5,6 +5,7 @@ defined once and reused by every agent activity.
 """
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from google.adk.agents import LlmAgent
@@ -30,6 +31,7 @@ async def run_agent(
     allow_clarification: bool = True,
     image_bytes: bytes | None = None,
     image_mime_type: str = "",
+    tools: list[Callable] | None = None,
 ) -> AgentRunResult:
     """Runs one ADK agent turn and returns its final text response.
 
@@ -41,6 +43,12 @@ async def run_agent(
     the workflow to ask the user something — used for activities that run
     in parallel with another activity, since the workflow's clarification
     state only supports one pending question at a time.
+
+    tools are plain async functions; ADK wraps each in a FunctionTool and
+    drives any tool-calling loop itself inside runner.run_async below. Since
+    run_agent is only ever awaited from inside an @activity.defn (never from
+    workflow code), a tool that does real I/O is safe here the same way the
+    LLM call itself is — no Temporal determinism/sandbox concerns apply.
     """
     model_name = os.environ.get("ADK_MODEL", "openai/gpt-4o-mini")
 
@@ -48,6 +56,7 @@ async def run_agent(
         name=name,
         model=LiteLlm(model=model_name),
         instruction=instruction + CLARIFY_CONVENTION if allow_clarification else instruction,
+        tools=tools or [],
     )
 
     app_name = "temporal-adk-poc"

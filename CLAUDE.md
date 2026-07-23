@@ -49,11 +49,12 @@ clients/starter.py / clients/app.py --> Temporal Server --> worker.py
 
 ### Layout
 
-Each of the five agents is its own component: a folder under `agents/` holding its `prompt.py` (the instruction text, nothing else) and `activity.py` (the Temporal `@activity.defn` that builds the request and calls `run_agent(...)`). This is deliberate: prompt wording and orchestration/plumbing code never share a file, so tuning an agent's instructions never touches logic and vice versa.
+Each of the five agents is its own component: a folder under `agents/` holding its `prompt.py` (the instruction text, nothing else), `tools.py` (that agent's tool functions, if any), and `activity.py` (the Temporal `@activity.defn` that builds the request and calls `run_agent(...)`). This is deliberate: prompt wording, tool implementations, and orchestration/plumbing code never share a file, so tuning an agent's instructions never touches logic and vice versa.
 
 - `shared/types.py` — dataclasses shared across process boundaries: `IntakeForm`, `AgentRequest`, `AgentResponse`, `IntakeResult`, `TranscriptEntry`, `IntakeStatus`. Re-exported from `shared/__init__.py`.
-- `agents/<name>/prompt.py` — the instruction text for that agent, and nothing else (e.g. `agents/architecture_evaluator/prompt.py` also holds `ARCHITECTURE_STANDARDS`, since that's prompt content specific to that one agent).
-- `agents/<name>/activity.py` — the Temporal activity: builds the prompt from the request, calls `run_agent(...)`. This is the only place real I/O (OpenAI calls) happens for that agent.
+- `agents/<name>/prompt.py` — the instruction text for that agent, and nothing else.
+- `agents/<name>/tools.py` — plain `async def` functions the agent can call mid-turn (e.g. `agents/architecture_evaluator/tools.py` holds `fetch_architecture_standards` and the `ARCHITECTURE_STANDARDS` text it returns). Passed to `run_agent(..., tools=[...])`; ADK wraps each in a `FunctionTool` and drives any tool-calling loop itself inside `runner.run_async`. Since `run_agent` only ever runs inside an `@activity.defn`, a tool doing real I/O is exactly as safe as the LLM call itself — no Temporal determinism/sandbox concerns, unlike a tool that ran directly in workflow code.
+- `agents/<name>/activity.py` — the Temporal activity: builds the prompt from the request, calls `run_agent(...)`. This is the only place real I/O (OpenAI calls, tool calls) happens for that agent.
 - `agents/intake/attachment.py` — parses a supporting attachment (PDF/image/text) into text or image bytes for the intake agent only; no other agent touches attachments.
 - `runner/agent_runner.py` — `run_agent()` builds a fresh ADK `LlmAgent` + `LiteLlm(model=ADK_MODEL)` + `Runner` per call (stateless, safe to retry), runs one turn, and parses the `CLARIFY_NEEDED:` convention out of the response.
 - `runner/clarify_prompt.py` — the `CLARIFY_CONVENTION` prompt text and `CLARIFY_PREFIX` marker, appended to every clarification-capable agent's instruction by `run_agent`.

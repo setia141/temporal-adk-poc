@@ -6,6 +6,7 @@ from storage import get_attachment_store
 
 from .attachment import Attachment, load_attachment
 from .prompt import INSTRUCTION
+from .tools import lookup_requesting_team
 
 
 @activity.defn
@@ -27,6 +28,7 @@ async def intake_activity(request: AgentRequest) -> AgentResponse:
         prompt=f"Raw intake form:\n{request.subject}\n\n{request.context}{attachment_section}".strip(),
         image_bytes=attachment.image_bytes,
         image_mime_type=attachment.image_mime_type,
+        tools=[lookup_requesting_team],
     )
     return AgentResponse(
         agent_name="intake_preparation",
