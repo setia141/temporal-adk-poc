@@ -23,6 +23,15 @@ class AgentRunResult:
     question: str = ""
 
 
+def _gateway_headers() -> dict[str, str]:
+    """Extra HTTP headers for a custom gateway, beyond what OPENAI_API_KEY /
+    AZURE_API_KEY / etc. already send. Every provider (openai/, azure/,
+    anthropic/, gemini/, vertex_ai/, ...) goes through this same LiteLlm(...)
+    call, so one env var covers all of them — no per-provider wiring needed."""
+    raw = os.environ.get("AI_GATEWAY_HEADERS", "")
+    return dict(pair.split("=", 1) for pair in raw.split(",") if pair)
+
+
 async def run_agent(
     name: str,
     instruction: str,
@@ -46,7 +55,7 @@ async def run_agent(
 
     agent = LlmAgent(
         name=name,
-        model=LiteLlm(model=model_name),
+        model=LiteLlm(model=model_name, extra_headers=_gateway_headers() or None),
         instruction=instruction + CLARIFY_CONVENTION if allow_clarification else instruction,
     )
 

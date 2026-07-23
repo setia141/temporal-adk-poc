@@ -134,6 +134,18 @@ resolve those imports correctly when run from the repo root.
    `.env` is gitignored, so your key never gets committed — only
    `.env.example` (which has no real credentials) is tracked.
 
+   **Other providers / a custom org gateway**: `runner/agent_runner.py`
+   always builds `LiteLlm(model=ADK_MODEL, ...)` directly, so switching
+   provider is just changing `ADK_MODEL`'s prefix (`azure/...`,
+   `anthropic/...`, `gemini/...`, `vertex_ai/...`, ...) — litellm reads that
+   provider's own API-key/base-URL env vars the same way it reads
+   `OPENAI_API_BASE` (see `.env.example` for concrete Azure/Gemini gateway
+   examples). If your gateway needs a header beyond the provider's own API
+   key (a tenant header, a second auth token, ...), set
+   `AI_GATEWAY_HEADERS` — it's passed straight through as
+   `LiteLlm(..., extra_headers=...)`, so it applies no matter which provider
+   you're using, with no extra code per provider.
+
 ## Run
 
 The pipeline needs three long-lived processes running at once: the Temporal
