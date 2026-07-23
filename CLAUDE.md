@@ -24,9 +24,9 @@ There is no test suite, lint config, or build step in this repo.
 
 Debugging a stuck workflow: `temporal task-queue describe --task-queue adk-agents-task-queue` to check for a live poller; if the queue has a poller but no progress, `worker.py` is likely wedged — kill and restart it; the pending workflow task resumes automatically.
 
-## Architecture (plugin-based — differs from `master`)
+## Architecture
 
-On `master`, each agent turn is a hand-written `@activity.defn`. On this branch, agent code (ADK `LlmAgent` + `InMemoryRunner` event loop, response parsing, tool-calling loop) runs **as workflow code**; only the actual LLM HTTP call becomes a Temporal Activity (`invoke_model`, auto-registered by `GoogleAdkPlugin`). `run_intake` / `run_risk_scoring` / etc. are plain `async def`s awaited directly from `IntakeWorkflow.run`, not dispatched via `workflow.execute_activity`.
+Agent code (ADK `LlmAgent` + `InMemoryRunner` event loop, response parsing, tool-calling loop) runs **as workflow code**; only the actual LLM HTTP call becomes a Temporal Activity (`invoke_model`, auto-registered by `GoogleAdkPlugin`). `run_intake` / `run_risk_scoring` / etc. are plain `async def`s awaited directly from `IntakeWorkflow.run`, not dispatched via `workflow.execute_activity`.
 
 ### Layout
 
@@ -42,9 +42,9 @@ Each of the five agents is a folder under `agents/` holding `prompt.py` (instruc
 - `worker.py` — registers the workflow, `load_attachments_activity`, and the five tool activities (`GoogleAdkPlugin` auto-registers `invoke_model`).
 - `clients/starter.py` / `clients/app.py` — CLI and Streamlit clients; both connect with `plugins=[GoogleAdkPlugin()]`. Both insert the repo root into `sys.path` (they live one level down from the top-level packages).
 
-### Determinism boundary (critical — different from master)
+### Determinism boundary (critical)
 
-Workflow code here *includes* the ADK agent machinery, so the rules apply to more code than on `master`:
+Workflow code here *includes* the ADK agent machinery, so the rules apply to more code than a typical Temporal workflow:
 
 - `IntakeWorkflow.run`, `_run_stage`, every `agents/<name>/step.py`, every tool **wrapper**, and `run_agent` itself all execute as workflow code — no network, no randomness, no real timers, no direct I/O anywhere in them. The plugin patches ADK's time/uuid providers to Temporal's deterministic ones.
 - Real I/O lives only in Activities: `invoke_model` (the LLM call), `load_attachments_activity`, and the five `*_activity` functions in `tools.py`.
@@ -73,4 +73,4 @@ Streamlit reruns execute inside their own asyncio loop, so `app.py` keeps one pe
 ### Other notes
 
 - Whether an agent asks a clarifying question is a genuine LLM judgment guided by instructions, not a hardcoded trigger; default form values in the clients are tuned to reliably trigger the interruptible agents.
-- `MIGRATION_NOTES.md` records the spike history and blockers found (and their resolutions) — useful context for why this branch differs from `master`.
+- `MIGRATION_NOTES.md` records blockers found while adopting the plugin (and their resolutions) — useful background on some of the choices above.
