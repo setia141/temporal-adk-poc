@@ -1,5 +1,9 @@
 """Tools available to the architecture evaluator agent."""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Invented-but-plausible baseline standards doc for the evaluator to compare
 # against — swap for a real org standard when this stops being a POC.
 ARCHITECTURE_STANDARDS = """
@@ -21,6 +25,7 @@ async def fetch_architecture_standards() -> str:
     submitted architecture notes against. Always call this before evaluating
     — standards can change, so don't rely on prior knowledge of them.
     """
+    logger.info("fetch_architecture_standards called")
     # ponytail: stubbed standards doc — replace with a real internal
     # wiki/standards-service API call once one is available.
     return ARCHITECTURE_STANDARDS

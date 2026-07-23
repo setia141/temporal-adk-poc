@@ -54,6 +54,7 @@ class IntakeWorkflow:
         self._result: IntakeResult | None = None
         self._form: IntakeForm | None = None
         self._pending_amendment: str | None = None  # a STAGE_ORDER name, or None
+        self._awaiting_confirmation: bool = False
 
     async def _run_stage(self, agent_name: str, activity_fn, request: AgentRequest):
         """Returns an AgentResponse, or None if an amendment arrived while
@@ -72,9 +73,14 @@ class IntakeWorkflow:
                 self._transcript.append(TranscriptEntry(agent_name, "output", response.output))
                 return response
 
-            self._transcript.append(TranscriptEntry(agent_name, "question", response.question))
+            # response.output (not response.question) is what's shown to the
+            # user: when the agent is answering a follow-up question before
+            # re-asking (see CLARIFY_CONVENTION), response.output is that
+            # full conversational reply — response.question alone would be
+            # just the bare re-asked question, silently dropping the answer.
+            self._transcript.append(TranscriptEntry(agent_name, "question", response.output))
             self._pending_agent = agent_name
-            self._pending_question = response.question
+            self._pending_question = response.output
             await workflow.wait_condition(
                 lambda: self._latest_answer is not None or self._pending_amendment is not None
             )
@@ -115,11 +121,20 @@ class IntakeWorkflow:
                     intake_activity,
                     AgentRequest(
                         subject=form_text,
-                        attachment_ref=form.attachment_ref,
-                        attachment_filename=form.attachment_filename,
+                        attachment_refs=form.attachment_refs,
+                        attachment_filenames=form.attachment_filenames,
                     ),
                 )
                 if intake is None:
+                    restart_from = self._pending_amendment
+                    continue
+
+                self._awaiting_confirmation = True
+                await workflow.wait_condition(
+                    lambda: not self._awaiting_confirmation or self._pending_amendment is not None
+                )
+                if self._pending_amendment is not None:
+                    self._awaiting_confirmation = False
                     restart_from = self._pending_amendment
                     continue
 
@@ -198,6 +213,19 @@ class IntakeWorkflow:
             raise ValueError("Answer cannot be blank.")
 
     @workflow.update
+    async def confirm_intake_summary(self) -> str:
+        """Approves the just-produced intake summary, letting the pipeline
+        proceed into triage. Call submit_amendment instead to correct a
+        field — that re-runs intake and lands back on this same checkpoint."""
+        self._awaiting_confirmation = False
+        return "confirmed"
+
+    @confirm_intake_summary.validator
+    def _validate_confirm_intake_summary(self) -> None:
+        if not self._awaiting_confirmation:
+            raise ValueError("No intake summary is currently awaiting confirmation.")
+
+    @workflow.update
     async def submit_amendment(self, field: str, value: str) -> str:
         """Corrects a field the user already submitted, even if a later
         stage has already run (or is currently paused asking its own
@@ -233,4 +261,5 @@ class IntakeWorkflow:
             transcript=list(self._transcript),
             is_complete=self._done,
             result=self._result,
+            awaiting_confirmation=self._awaiting_confirmation,
         )

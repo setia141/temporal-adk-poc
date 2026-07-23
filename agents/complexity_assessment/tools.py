@@ -1,5 +1,9 @@
 """Tools available to the complexity assessment agent."""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 async def lookup_downstream_dependencies(api_name: str) -> dict:
     """Looks up how many existing systems would need to integrate with or be
@@ -9,6 +13,7 @@ async def lookup_downstream_dependencies(api_name: str) -> dict:
     Args:
         api_name: The API's name, as given on the intake form.
     """
+    logger.info("lookup_downstream_dependencies called: api_name=%s", api_name)
     # ponytail: stubbed dependency-graph lookup — replace with a real
     # service-catalog/dependency-graph API call once one is available.
     return {

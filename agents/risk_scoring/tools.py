@@ -1,5 +1,9 @@
 """Tools available to the risk scoring agent."""
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 async def lookup_prior_incidents(api_name: str) -> dict:
     """Looks up prior security/compliance incidents involving this API name
@@ -9,6 +13,7 @@ async def lookup_prior_incidents(api_name: str) -> dict:
     Args:
         api_name: The API's name, as given on the intake form.
     """
+    logger.info("lookup_prior_incidents called: api_name=%s", api_name)
     # ponytail: stubbed incident-history lookup — replace with a real
     # compliance/incident-tracking API call once one is available.
     return {

@@ -29,8 +29,7 @@ async def run_agent(
     instruction: str,
     prompt: str,
     allow_clarification: bool = True,
-    image_bytes: bytes | None = None,
-    image_mime_type: str = "",
+    images: list[tuple[bytes, str]] | None = None,
     tools: list[Callable] | None = None,
 ) -> AgentRunResult:
     """Runs one ADK agent turn and returns its final text response.
@@ -66,7 +65,7 @@ async def run_agent(
     runner = Runner(agent=agent, app_name=app_name, session_service=session_service)
 
     parts = [types.Part(text=prompt)]
-    if image_bytes:
+    for image_bytes, image_mime_type in images or []:
         parts.append(types.Part.from_bytes(data=image_bytes, mime_type=image_mime_type))
     content = types.Content(role="user", parts=parts)
 
@@ -92,26 +91,26 @@ async def run_agent(
             return normalized[len(CLARIFY_PREFIX):].strip(" :*_`")
         return ""
 
-    question = _match_prefix(stripped)
-    if question:
-        return AgentRunResult(output=final_text, needs_clarification=True, question=question)
-
-    # Some models append the marker as an extra line alongside a partial
-    # answer instead of replying with only that line, despite instructions.
-    # Scan every line: a CLARIFY_NEEDED: line anywhere means the model is
-    # trying to ask something, and it must not be silently absorbed into
-    # the "final" output — better to pause and ask than ship a half answer.
-    for line in stripped.splitlines():
+    # A CLARIFY_NEEDED: line anywhere in the response means the model is
+    # trying to ask something (covers both the simple "entire response is
+    # just that line" case and a model that explains something — e.g.
+    # answering a follow-up question from the user — before re-asking).
+    # display keeps any such explanatory text but replaces the raw marker
+    # line with the bare question, so the user sees the full conversational
+    # reply instead of just the extracted question.
+    lines = stripped.splitlines()
+    for i, line in enumerate(lines):
         question = _match_prefix(line)
         if question:
-            return AgentRunResult(output=final_text, needs_clarification=True, question=question)
+            display = "\n".join([*lines[:i], question, *lines[i + 1 :]]).strip()
+            return AgentRunResult(output=display, needs_clarification=True, question=question)
 
     # Fallback: some models ask their clarifying question in plain prose
     # instead of using the required prefix. A short, single-line response
     # ending in "?" is almost certainly a question, not a finished answer —
     # treat it as one rather than silently shipping it as the final output.
-    lines = [line for line in stripped.splitlines() if line.strip()]
-    if len(lines) == 1 and stripped.endswith("?") and len(stripped) < 300:
-        return AgentRunResult(output=final_text, needs_clarification=True, question=stripped)
+    non_blank_lines = [line for line in lines if line.strip()]
+    if len(non_blank_lines) == 1 and stripped.endswith("?") and len(stripped) < 300:
+        return AgentRunResult(output=stripped, needs_clarification=True, question=stripped)
 
     return AgentRunResult(output=final_text)
