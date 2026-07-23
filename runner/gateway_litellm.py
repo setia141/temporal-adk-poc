@@ -60,6 +60,8 @@ class GatewayLiteLlm(LiteLlm):
             kwargs.setdefault("api_base", base_url)
         if headers := _gateway_headers():
             kwargs.setdefault("extra_headers", headers)
+        if api_key := os.environ.get("AI_GATEWAY_API_KEY"):
+            kwargs.setdefault("api_key", api_key)
         super().__init__(model=model, **kwargs)
 
     @classmethod

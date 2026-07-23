@@ -14,6 +14,7 @@ from agents.intake import load_attachments_activity, lookup_requesting_team_acti
 from agents.risk_scoring import lookup_prior_incidents_activity
 from agents.triage_classification import lookup_team_review_capacity_activity
 from runner.gateway_litellm import register_gateway_litellm_if_configured
+from runner.llm_call_logger import register_llm_call_logger
 from workflow import IntakeWorkflow
 
 _dotenv_path = find_dotenv()
@@ -32,6 +33,10 @@ logging.info(
 # be passed per-call — instead this re-registers a LiteLlm subclass with
 # AI_GATEWAY_BASE_URL/AI_GATEWAY_HEADERS baked in. See gateway_litellm.py.
 register_gateway_litellm_if_configured()
+
+# Logs the exact outbound HTTP call (URL, headers with values masked) for
+# every LLM invocation — see runner/llm_call_logger.py.
+register_llm_call_logger()
 
 
 async def main() -> None:
